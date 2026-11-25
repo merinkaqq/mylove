@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>BLOOM 3D ASCII ENGINE — Heart 'A</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100dvh;
+      background-color: #000000;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100dvh;
+      display: block;
+      background-color: #000000;
+      touch-action: none;
+      cursor: grab;
+    }
+    canvas:active {
+      cursor: grabbing;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="bloomCanvas"></canvas>
+
+  <script>
+    /**
+     * Pure Full-Screen Mobile-First 3D ASCII Beating Heart with Glowing 'A'
+     * Zero UI chrome, zero text overlays, continuous ~70 BPM lub-dub cardiac pulsation.
+     */
+    const RAMP = ".:;=+*xo%#&@";
+    const GLITCH = "01<>{}[]#$%&*+=?!ABXZ";
+    const SHIMMER_CHARS = "letitbloomA";
+
+    function createRng(seed) {
+      let a = seed >>> 0;
+      function random() {
+        a |= 0;
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      function uniform(min, max) {
+        return min + random() * (max - min);
+      }
+      function integers(max) {
+        return Math.floor(random() * max);
+      }
+      return { random, uniform, integers };
+    }
+
+    const canvas = document.getElementById("bloomCanvas");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    const bloomCanvas1 = document.createElement("canvas");
+    const bloomCtx1 = bloomCanvas1.getContext("2d");
+
+    const bloomCanvas2 = document.createElement("canvas");
+    const bloomCtx2 = bloomCanvas2.getContext("2d");
+
+    let W = 390;
+    let H = 844;
+    let cw = 6;
+    let ch = 10;
+    let COLS = 65;
+    let ROWS = 84;
+    let GRID_SIZE = COLS * ROWS;
+    let SCALE = 180;
+    let CY = H * 0.5;
+    let FONT_SPEC = 'bold 10px "JetBrains Mono", Consolas, Menlo, monospace';
+    let isMobileViewport = false;
+
+    let Lg = new Float32Array(0);
+    let CgR = new Float32Array(0);
+    let CgG = new Float32Array(0);
+    let CgB = new Float32Array(0);
+    let Dg = new Float32Array(0);
+    let Pg = new Int32Array(0);
+    let filled = new Uint8Array(0);
+    let CELL_PHASE = new Float32Array(0);
+
+    function resizeViewport() {
+      W = Math.max(280, Math.floor(window.innerWidth));
+      H = Math.max(320, Math.floor(window.innerHeight));
+      isMobileViewport = W < 640;
+
+      canvas.width = W;
+      canvas.height = H;
+
+      bloomCanvas1.width = Math.max(16, Math.floor(W / 5));
+      bloomCanvas1.height = Math.max(16, Math.floor(H / 5));
+      bloomCanvas2.width = Math.max(8, Math.floor(W / 18));
+      bloomCanvas2.height = Math.max(8, Math.floor(H / 18));
+
+      // Adaptive ASCII cell size: crisp on small mobile screens, ultra-detailed on desktop
+      const fontSize = W < 400 ? 9 : W < 768 ? 10 : 10;
+      FONT_SPEC = `bold ${fontSize}px "JetBrains Mono", Consolas, Menlo, "DejaVu Sans Mono", "Courier New", monospace`;
+      ctx.font = FONT_SPEC;
+      cw = Math.max(5, Math.round(ctx.measureText("M").width));
+      ch = fontSize;
+
+      COLS = Math.floor(W / cw);
+      ROWS = Math.floor(H / ch);
+      GRID_SIZE = COLS * ROWS;
+
+      // Fit heart comfortably with generous breathing room for systole pulse peaks on portrait & landscape
+      const isPortrait = H > W;
+      const limitingSpan = isPortrait ? W * 0.90 : Math.min(W * 0.86, H * 0.88);
+      SCALE = limitingSpan * (isPortrait ? 0.43 : 0.39);
+      CY = H * 0.49;
+
+      const phaseRng = createRng(42);
+      CELL_PHASE = new Float32Array(GRID_SIZE);
+      for (let i = 0; i < GRID_SIZE; i++) {
+        CELL_PHASE[i] = phaseRng.random() * Math.PI * 2;
+      }
+
+      Lg = new Float32Array(GRID_SIZE);
+      CgR = new Float32Array(GRID_SIZE);
+      CgG = new Float32Array(GRID_SIZE);
+      CgB = new Float32Array(GRID_SIZE);
+      Dg = new Float32Array(GRID_SIZE);
+      Pg = new Int32Array(GRID_SIZE);
+      filled = new Uint8Array(GRID_SIZE);
+    }
+
+    resizeViewport();
+    window.addEventListener("resize", resizeViewport);
+    window.addEventListener("orientationchange", () => setTimeout(resizeViewport, 80));
+
+    /**
+     * Build 3D Volumetric Heart Shell + Dense Volumetric Letter 'A' Inside
+     */
+    const rng = createRng(11);
+    const STOPS = [
+      [0.70, 0.02, 0.20], // #b30533 deep crimson
+      [1.00, 0.14, 0.41], // #ff2468 vibrant rose
+      [1.00, 0.52, 0.66], // #ff85a8 soft pink
+      [1.00, 0.84, 0.88], // bright highlight rim
+    ];
+
+    const posList = [];
+    const nrmList = [];
+    const colList = [];
+    const aoList = [];
+    const pidList = [];
+    const isLetterList = [];
+
+    // 1. Volumetric 3D Heart Shell with Front & Back Viewing Cavity for 'A'
+    const NU = isMobileViewport ? 160 : 196;
+    const NV = isMobileViewport ? 50 : 62;
+    const heartGrid = new Float32Array(NU * NV * 3);
+    const heartV = new Float32Array(NV);
+
+    for (let j = 0; j < NV; j++) {
+      heartV[j] = -1.0 + (2.0 * j) / (NV - 1);
+    }
+
+    for (let i = 0; i < NU; i++) {
+      const u = (2 * Math.PI * i) / NU;
+      const sinU = Math.sin(u);
+      const hx = (16.0 * sinU * sinU * sinU) / 16.0;
+      const hz =
+        (13.0 * Math.cos(u) -
+          5.0 * Math.cos(2 * u) -
+          2.0 * Math.cos(3 * u) -
+          Math.cos(4 * u)) /
+          16.0 +
+        0.15;
+
+      for (let j = 0; j < NV; j++) {
+        const v = heartV[j];
+        const rimProfile = Math.sqrt(Math.max(0.0, 1.0 - v * v));
+        const shellScale = 0.63 + 0.37 * rimProfile;
+        const px = hx * shellScale;
+        const pz = hz * shellScale;
+        const py = 0.46 * v * (1.0 - 0.22 * Math.abs(hz));
+
+        const idx = (i * NV + j) * 3;
+        heartGrid[idx + 0] = px;
+        heartGrid[idx + 1] = py;
+        heartGrid[idx + 2] = pz;
+      }
+    }
+
+    for (let i = 0; i < NU; i++) {
+      const iPrev = (i - 1 + NU) % NU;
+      const iNext = (i + 1) % NU;
+      for (let j = 0; j < NV; j++) {
+        const jPrev = j === 0 ? 0 : j - 1;
+        const jNext = j === NV - 1 ? NV - 1 : j + 1;
+        const jScale = j === 0 || j === NV - 1 ? 1.0 : 0.5;
+
+        const idxCur = (i * NV + j) * 3;
+        const idxU1 = (iNext * NV + j) * 3;
+        const idxU0 = (iPrev * NV + j) * 3;
+        const idxV1 = (i * NV + jNext) * 3;
+        const idxV0 = (i * NV + jPrev) * 3;
+
+        const px = heartGrid[idxCur + 0];
+        const py = heartGrid[idxCur + 1];
+        const pz = heartGrid[idxCur + 2];
+
+        // Carve clean front & back aperture so the glowing 'A' inside is always crisp
+        const inAperture =
+          Math.abs(py) > 0.038 &&
+          (px / 0.51) * (px / 0.51) + ((pz + 0.03) / 0.49) * ((pz + 0.03) / 0.49) < 1.0;
+
+        if (inAperture) continue;
+
+        const dux = (heartGrid[idxU1 + 0] - heartGrid[idxU0 + 0]) * 0.5;
+        const duy = (heartGrid[idxU1 + 1] - heartGrid[idxU0 + 1]) * 0.5;
+        const duz = (heartGrid[idxU1 + 2] - heartGrid[idxU0 + 2]) * 0.5;
+
+        const dvx = (heartGrid[idxV1 + 0] - heartGrid[idxV0 + 0]) * jScale;
+        const dvy = (heartGrid[idxV1 + 1] - heartGrid[idxV0 + 1]) * jScale;
+        const dvz = (heartGrid[idxV1 + 2] - heartGrid[idxV0 + 2]) * jScale;
+
+        let nx = duy * dvz - duz * dvy;
+        let ny = duz * dvx - dux * dvz;
+        let nz = dux * dvy - duy * dvx;
+        const invLen = 1.0 / (Math.hypot(nx, ny, nz) + 1e-9);
+        nx *= invLen;
+        ny *= invLen;
+        nz *= invLen;
+
+        const gt = Math.max(0, Math.min(1, (pz + 0.85) / 1.7)) * (STOPS.length - 1);
+        const i0 = Math.min(Math.floor(gt), STOPS.length - 2);
+        const fr = gt - i0;
+        const cr = STOPS[i0][0] * (1 - fr) + STOPS[i0 + 1][0] * fr;
+        const cg = STOPS[i0][1] * (1 - fr) + STOPS[i0 + 1][1] * fr;
+        const cb = STOPS[i0][2] * (1 - fr) + STOPS[i0 + 1][2] * fr;
+
+        const vAbs = Math.abs(heartV[j]);
+        const ao = 0.44 + 0.56 * (1.0 - vAbs * 0.72);
+
+        posList.push(px, py, pz);
+        nrmList.push(nx, ny, nz);
+        colList.push(cr, cg, cb);
+        aoList.push(ao);
+        pidList.push(rng.integers(10000));
+        isLetterList.push(0);
+      }
+    }
+
+    // 2. Volumetric 3D Letter 'A' Suspended in the Center Cavity (#ffe4a8 -> #ff8a75)
+    function addLetterSegment(p0, p1, radius, samples) {
+      const ax = p1[0] - p0[0];
+      const ay = p1[1] - p0[1];
+      const az = p1[2] - p0[2];
+      const len = Math.hypot(ax, ay, az);
+      const ux = ax / len;
+      const uy = ay / len;
+      const uz = az / len;
+
+      const px = -uz;
+      const pz = ux;
+
+      for (let s = 0; s < samples; s++) {
+        const tSeg = rng.random();
+        const ang = rng.uniform(0, 2 * Math.PI);
+        const rTube = radius * Math.sqrt(rng.uniform(0.08, 1.0));
+        const cosA = Math.cos(ang);
+        const sinA = Math.sin(ang);
+
+        const nx = cosA * px;
+        const ny = sinA;
+        const nz = cosA * pz;
+
+        const x = p0[0] + tSeg * ax + nx * rTube;
+        const y = p0[1] + tSeg * ay + ny * rTube * 1.45;
+        const z = p0[2] + tSeg * az + nz * rTube;
+
+        // Warm golden-peach (#ffe4a8) to coral-rose (#ff8a75)
+        const cr = 1.0;
+        const cg = 0.54 + 0.35 * (1.0 - tSeg);
+        const cb = 0.46 + 0.20 * (1.0 - tSeg);
+
+        posList.push(x, y, z);
+        nrmList.push(nx, ny, nz);
+        colList.push(cr, cg, cb);
+        aoList.push(1.5);
+        pidList.push(rng.integers(10000));
+        isLetterList.push(1);
+      }
+    }
+
+    // Left leg, right leg, and crossbar of 'A'
+    addLetterSegment([-0.26, 0.0, -0.35], [0.0, 0.0, 0.32], 0.058, 1250);
+    addLetterSegment([0.26, 0.0, -0.35], [0.0, 0.0, 0.32], 0.058, 1250);
+    addLetterSegment([-0.155, 0.0, -0.05], [0.155, 0.0, -0.05], 0.048, 750);
+
+    const TOTAL_PTS = aoList.length;
+    const POS_ALL = new Float32Array(posList);
+    const NRM_ALL = new Float32Array(nrmList);
+    const COL_ALL = new Float32Array(colList);
+    const AO_ALL = new Float32Array(aoList);
+    const PID_ALL = new Int32Array(pidList);
+    const IS_LETTER = new Uint8Array(isLetterList);
+
+    // Camera & Lighting Vectors
+    const ELEV = (15 * Math.PI) / 180;
+    const CAM_D = [0.0, -Math.cos(ELEV), Math.sin(ELEV)];
+    const CAM_UP = [0.0, Math.sin(ELEV), Math.cos(ELEV)];
+    const LIGHT_RAW = [-0.45, -0.65, 0.95];
+    const lightLen = Math.hypot(LIGHT_RAW[0], LIGHT_RAW[1], LIGHT_RAW[2]);
+    const LIGHT_N = [LIGHT_RAW[0] / lightLen, LIGHT_RAW[1] / lightLen, LIGHT_RAW[2] / lightLen];
+    const halfRaw = [LIGHT_N[0] + CAM_D[0], LIGHT_N[1] + CAM_D[1], LIGHT_N[2] + CAM_D[2]];
+    const halfLen = Math.hypot(halfRaw[0], halfRaw[1], halfRaw[2]);
+    const HALF = [halfRaw[0] / halfLen, halfRaw[1] / halfLen, halfRaw[2] / halfLen];
+
+    // Touch & Mouse Drag Rotation with Inertia & Gentle Return to Front View
+    let yawOffset = 0.0;
+    let pitchOffset = 0.0;
+    let yawVelocity = 0.0;
+    let pitchVelocity = 0.0;
+    let isDragging = false;
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+
+    canvas.addEventListener("pointerdown", (e) => {
+      isDragging = true;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+      yawVelocity = 0;
+      pitchVelocity = 0;
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch (_) {}
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastPointerX;
+      const dy = e.clientY - lastPointerY;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+
+      const dYaw = dx * 0.0095;
+      const dPitch = dy * 0.007;
+      yawOffset += dYaw;
+      pitchOffset = Math.max(-0.78, Math.min(0.78, pitchOffset + dPitch));
+      yawVelocity = dYaw;
+      pitchVelocity = dPitch;
+    });
+
+    function releaseDrag(e) {
+      if (!isDragging) return;
+      isDragging = false;
+      try {
+        canvas.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+    }
+    canvas.addEventListener("pointerup", releaseDrag);
+    canvas.addEventListener("pointercancel", releaseDrag);
+
+    /**
+     * Realistic ~70 BPM Cardiac Lub-Dub Curve
+     * Returns { heartPulse, letterPulse, glowBoost } in [0..1+]
+     */
+    function computeHeartbeat(tSec) {
+      const bpm = 70.0;
+      const period = 60.0 / bpm; // ~0.857s per cardiac cycle
+      const phase = (tSec % period) / period; // [0..1)
+
+      // Primary systolic contraction ("lub" at phase ~ 0.14)
+      const d1 = (phase - 0.14) / 0.068;
+      const lub = Math.exp(-0.5 * d1 * d1);
+
+      // Secondary diastolic rebound ("dub" at phase ~ 0.34)
+      const d2 = (phase - 0.34) / 0.082;
+      const dub = 0.56 * Math.exp(-0.5 * d2 * d2);
+
+      // Subtle slow respiratory breathing wave
+      const breath = 0.018 * Math.sin(tSec * 1.35);
+
+      const pulse = lub + dub;
+      return {
+        heartScale: 1.0 + 0.095 * pulse + breath,
+        letterScale: 1.0 + 0.042 * pulse + breath * 0.5,
+        glowBoost: pulse,
+      };
+    }
+
+    function renderFrame(tSec, gen) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, W, H);
+      ctx.font = FONT_SPEC;
+      ctx.textBaseline = "top";
+
+      const { heartScale, letterScale, glowBoost } = computeHeartbeat(tSec);
+
+      Lg.fill(0);
+      CgR.fill(0);
+      CgG.fill(0);
+      CgB.fill(0);
+      Dg.fill(-3.0);
+      Pg.fill(0);
+
+      // Gentle 3D sway + user interactive rotation
+      const autoYaw = 0.24 * Math.sin(tSec * 0.78);
+      const yaw = autoYaw + yawOffset;
+      const pitch = pitchOffset;
+
+      const cy = Math.cos(yaw);
+      const sy = Math.sin(yaw);
+      const cp = Math.cos(pitch);
+      const sp = Math.sin(pitch);
+
+      for (let i = 0; i < TOTAL_PTS; i++) {
+        const i3 = i * 3;
+        const isA = IS_LETTER[i] === 1;
+        const s = isA ? letterScale : heartScale;
+
+        let px = POS_ALL[i3 + 0] * s;
+        let py = POS_ALL[i3 + 1] * s;
+        let pz = POS_ALL[i3 + 2] * s;
+
+        // Pitch rotation (X-axis)
+        const py1 = py * cp - pz * sp;
+        const pz1 = py * sp + pz * cp;
+        py = py1;
+        pz = pz1;
+
+        // Yaw rotation (Z-axis)
+        const rx = px * cy - py * sy;
+        const ry = px * sy + py * cy;
+        px = rx;
+        py = ry;
+
+        // Perspective camera projection
+        const depth = px * CAM_D[0] + py * CAM_D[1] + pz * CAM_D[2];
+        const kProj = 5.0 / (5.0 - depth);
+        const sx = px * kProj;
+        const syProj = (px * CAM_UP[0] + py * CAM_UP[1] + pz * CAM_UP[2]) * kProj;
+
+        const colIdx = Math.floor((W / 2 + sx * SCALE) / cw);
+        const rowIdx = Math.floor((CY - syProj * SCALE) / ch);
+
+        if (colIdx < 0 || colIdx >= COLS || rowIdx < 0 || rowIdx >= ROWS) continue;
+        const cell = rowIdx * COLS + colIdx;
+
+        // Z-buffer occlusion
+        if (depth <= Dg[cell]) continue;
+
+        // Rotate normal
+        let nx = NRM_ALL[i3 + 0];
+        let ny = NRM_ALL[i3 + 1];
+        let nz = NRM_ALL[i3 + 2];
+
+        const ny1 = ny * cp - nz * sp;
+        const nz1 = ny * sp + nz * cp;
+        ny = ny1;
+        nz = nz1;
+
+        const rnx = nx * cy - ny * sy;
+        const rny = nx * sy + ny * cy;
+        nx = rnx;
+        ny = rny;
+
+        let nd = nx * CAM_D[0] + ny * CAM_D[1] + nz * CAM_D[2];
+        if (nd < 0) {
+          nx = -nx;
+          ny = -ny;
+          nz = -nz;
+          nd = -nd;
+        }
+
+        const diff = Math.max(0, nx * LIGHT_N[0] + ny * LIGHT_N[1] + nz * LIGHT_N[2]);
+        const specBase = Math.max(0, nx * HALF[0] + ny * HALF[1] + nz * HALF[2]);
+        const spec = Math.pow(specBase, 24);
+        const ao = AO_ALL[i];
+        const rim = 1 - nd;
+
+        // Boost luminance during systole/diastole beat peaks
+        const beatLum = 1.0 + 0.24 * glowBoost;
+        const lum = (0.28 + 0.92 * diff + 0.34 * rim * rim) * (0.36 + 0.64 * ao) * beatLum;
+        const dof = 0.58 + 0.42 * Math.max(0, Math.min(1, (depth + 0.8) / 1.6));
+
+        let r = (COL_ALL[i3 + 0] * lum * 1.18 + 0.44 * spec) * dof;
+        let g = (COL_ALL[i3 + 1] * lum * 1.18 + 0.44 * spec) * dof;
+        let b = (COL_ALL[i3 + 2] * lum * 1.18 + 0.44 * spec) * dof;
+        let lumt = Math.max(0, Math.min(1, (lum + 0.44 * spec) * dof));
+
+        if (isA) {
+          const aPulse = 1.12 + 0.18 * glowBoost;
+          r = Math.min(1.0, r * aPulse);
+          g = Math.min(1.0, g * aPulse);
+          b = Math.min(1.0, b * (1.06 + 0.14 * glowBoost));
+          lumt = Math.max(0.88, lumt);
+        }
+
+        Dg[cell] = depth;
+        Lg[cell] = lumt;
+        CgR[cell] = r;
+        CgG[cell] = g;
+        CgB[cell] = b;
+        Pg[cell] = isA ? -1 : PID_ALL[i];
+      }
+
+      for (let idx = 0; idx < GRID_SIZE; idx++) {
+        filled[idx] = Lg[idx] > 0.03 ? 1 : 0;
+      }
+
+      // Render ASCII characters with directional contour edges (/ \ | -) & subtle organic shimmer
+      const rampMax = RAMP.length - 1;
+      for (let r = 0; r < ROWS; r++) {
+        const rOff = r * COLS;
+        for (let c = 0; c < COLS; c++) {
+          const idx = rOff + c;
+          if (!filled[idx]) continue;
+
+          const dCur = Dg[idx];
+          const dRight = c + 1 < COLS && filled[idx + 1] ? Dg[idx + 1] : -3.0;
+          const dLeft = c - 1 >= 0 && filled[idx - 1] ? Dg[idx - 1] : -3.0;
+          const dDown = r + 1 < ROWS && filled[idx + COLS] ? Dg[idx + COLS] : -3.0;
+          const dUp = r - 1 >= 0 && filled[idx - COLS] ? Dg[idx - COLS] : -3.0;
+
+          const maxNb = Math.max(dRight, dLeft, dDown, dUp);
+          const jump = Math.max(
+            Math.abs(dCur - dRight),
+            Math.abs(dCur - dLeft),
+            Math.abs(dCur - dDown),
+            Math.abs(dCur - dUp)
+          );
+
+          const isEdge = jump > 0.34 && (jump > 2.0 || dCur >= maxNb);
+          const isLetterCell = Pg[idx] === -1;
+
+          // Subtle organic ASCII shimmer on select outer boundary/highlight cells during pulse
+          const shimmerWave = Math.sin(tSec * 7.5 + CELL_PHASE[idx]);
+          const isShimmer = !isLetterCell && isEdge && shimmerWave > 0.94 && glowBoost > 0.35;
+
+          let chr;
+          if (isShimmer) {
+            chr = GLITCH[gen.integers(GLITCH.length)];
+          } else if (isLetterCell) {
+            chr = isEdge ? "A" : "@#&A"[gen.integers(4)];
+          } else if (isEdge) {
+            const gx = (dRight - dLeft) / cw;
+            const gy = (dDown - dUp) / ch;
+            let a = ((Math.atan2(-gx, -gy) * 180) / Math.PI) % 180;
+            if (a < 0) a += 180;
+            if (a < 22.5 || a >= 157.5) chr = "-";
+            else if (a < 67.5) chr = "/";
+            else if (a < 112.5) chr = "|";
+            else chr = "\\";
+          } else if (Lg[idx] > 0.88) {
+            chr = SHIMMER_CHARS[(r * COLS + c) % SHIMMER_CHARS.length];
+          } else {
+            const ri = Math.max(0, Math.min(rampMax, Math.floor(Lg[idx] * rampMax)));
+            chr = RAMP[ri];
+          }
+
+          let cr = CgR[idx];
+          let cg = CgG[idx];
+          let cb = CgB[idx];
+
+          if (isEdge) {
+            const edgeBoost = 1.24 + 0.18 * glowBoost;
+            cr = cr * edgeBoost + 0.06;
+            cg = cg * edgeBoost + 0.05;
+            cb = cb * edgeBoost + 0.06;
+          }
+          if (isShimmer) {
+            cr = Math.min(1.0, cr + 0.25);
+            cg = Math.min(1.0, cg + 0.22);
+            cb = Math.min(1.0, cb + 0.25);
+          }
+
+          const R8 = Math.floor((Math.max(0, Math.min(1, cr)) * 255) / 10) * 10;
+          const G8 = Math.floor((Math.max(0, Math.min(1, cg)) * 255) / 10) * 10;
+          const B8 = Math.floor((Math.max(0, Math.min(1, cb)) * 255) / 10) * 10;
+
+          if (R8 === 0 && G8 === 0 && B8 === 0) continue;
+
+          ctx.fillStyle = `rgb(${R8},${G8},${B8})`;
+          ctx.fillText(chr, c * cw, r * ch);
+        }
+      }
+
+      // Two-Pass Additive Bloom Glow (amplified dynamically during each heartbeat peak)
+      bloomCtx1.clearRect(0, 0, bloomCanvas1.width, bloomCanvas1.height);
+      bloomCtx1.drawImage(canvas, 0, 0, bloomCanvas1.width, bloomCanvas1.height);
+
+      bloomCtx2.clearRect(0, 0, bloomCanvas2.width, bloomCanvas2.height);
+      bloomCtx2.drawImage(canvas, 0, 0, bloomCanvas2.width, bloomCanvas2.height);
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.imageSmoothingEnabled = true;
+      ctx.globalAlpha = 0.85 + 0.15 * glowBoost;
+      ctx.drawImage(bloomCanvas1, 0, 0, W, H);
+      ctx.globalAlpha = 0.80 + 0.20 * glowBoost;
+      ctx.drawImage(bloomCanvas2, 0, 0, W, H);
+      ctx.restore();
+    }
+
+    let startPerf = null;
+    const frameGen = createRng(5);
+
+    function animate(now) {
+      if (startPerf === null) startPerf = now;
+      const tSec = (now - startPerf) / 1000;
+
+      // Apply touch inertia & gentle spring back to front-facing orientation
+      if (!isDragging) {
+        yawOffset += yawVelocity;
+        pitchOffset = Math.max(-0.78, Math.min(0.78, pitchOffset + pitchVelocity));
+        yawVelocity *= 0.92;
+        pitchVelocity *= 0.92;
+        yawOffset *= 0.965;
+        pitchOffset *= 0.965;
+      }
+
+      renderFrame(tSec, frameGen);
+      requestAnimationFrame(animate);
+    }
+
+    window.onload = function () {
+      requestAnimationFrame(animate);
+    };
+  </script>
+</body>
+</html>
